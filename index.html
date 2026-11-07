@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Watch Party</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <section id="lobby" class="lobby">
+    <div class="card">
+      <h1>Watch Party</h1>
+      <p class="muted">Screen share at native resolution, or play synced local files at full original quality.</p>
+      <label>Your name <input id="nameInput" maxlength="24" placeholder="Alex" autocomplete="off"></label>
+      <label>Room code <input id="roomInput" maxlength="12" placeholder="Leave empty to create one" autocomplete="off"></label>
+      <button id="joinBtn" class="primary">Join room</button>
+    </div>
+  </section>
+
+  <section id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="room">Room <strong id="roomCode"></strong> <button id="copyLinkBtn" class="ghost small">Copy invite link</button></div>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-mode="share" role="tab">Screen share</button>
+        <button class="tab" data-mode="file" role="tab">Synced file</button>
+      </nav>
+      <div id="connStatus" class="status">Connecting…</div>
+    </header>
+
+    <main class="main">
+      <div class="stage-wrap">
+        <div id="stage" class="stage">
+          <video id="shareVideo" playsinline autoplay></video>
+          <video id="fileVideo" playsinline controls hidden></video>
+          <div id="placeholder" class="placeholder">Nobody is sharing yet.</div>
+          <div id="stats" class="stats" hidden></div>
+          <button id="fullscreenBtn" class="ghost small fs-btn" title="Fullscreen">⛶</button>
+          <button id="unmuteBtn" class="primary small unmute" hidden>Click to unmute</button>
+        </div>
+
+        <div id="sharePanel" class="panel">
+          <div class="row">
+            <label>Resolution
+              <select id="resSelect">
+                <option value="native" selected>Native (max on this display)</option>
+                <option value="2160">4K (2160p)</option>
+                <option value="1440">1440p</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+              </select>
+            </label>
+            <label>Frame rate
+              <select id="fpsSelect">
+                <option value="60" selected>60 fps</option>
+                <option value="30">30 fps</option>
+                <option value="120">120 fps (if supported)</option>
+              </select>
+            </label>
+            <label>Codec
+              <select id="codecSelect">
+                <option value="video/H264" selected>H.264 (hardware, best for 4K60)</option>
+                <option value="video/AV1">AV1 (best quality per bit, CPU heavy)</option>
+                <option value="video/VP9">VP9</option>
+              </select>
+            </label>
+            <label>Content
+              <select id="hintSelect">
+                <option value="motion" selected>Movies / games (smooth)</option>
+                <option value="detail">Text / slides (sharp)</option>
+              </select>
+            </label>
+            <label>Max bitrate <span id="bitrateLabel"></span>
+              <input id="bitrateInput" type="range" min="2" max="80" step="1" value="30">
+            </label>
+          </div>
+          <div class="row">
+            <button id="shareBtn" class="primary">Start sharing</button>
+            <span id="uploadHint" class="muted"></span>
+          </div>
+        </div>
+
+        <div id="filePanel" class="panel" hidden>
+          <div class="row">
+            <label class="file-pick">Choose video file <input id="fileInput" type="file" accept="video/*,.mkv"></label>
+            <span id="fileInfo" class="muted">Everyone picks the same file. Only play, pause and seek are sent, so you watch at full original quality.</span>
+          </div>
+        </div>
+      </div>
+
+      <aside class="side">
+        <h2>People</h2>
+        <ul id="peopleList" class="people"></ul>
+        <h2>Chat</h2>
+        <div id="chatLog" class="chat-log"></div>
+        <form id="chatForm" class="chat-form">
+          <input id="chatInput" placeholder="Say something…" autocomplete="off" maxlength="1000">
+          <button class="primary small">Send</button>
+        </form>
+      </aside>
+    </main>
+  </section>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
