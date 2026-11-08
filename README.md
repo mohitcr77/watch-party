@@ -29,3 +29,16 @@ python3 -m http.server 8080
 ```
 
 Then open http://localhost:8080.
+
+## Tests
+
+`e2e/` drives two headless Chrome instances against the site (needs Google Chrome installed).
+
+```bash
+python3 -m http.server 8080 &
+cd e2e && npm install
+node test.mjs .        # functional test; also writes movie.webm used below
+node usa-india.mjs     # emulated USA-to-India link: ~250 ms RTT, jitter, loss, capped upload
+```
+
+`usa-india.mjs` routes all WebRTC traffic through a local UDP proxy that adds delay, jitter, loss and a bandwidth cap, then reports the resolution, fps, bitrate and freezes the viewer gets.
