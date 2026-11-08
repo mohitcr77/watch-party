@@ -254,7 +254,7 @@ async function connectViewer(id) {
   const offer = await pc.createOffer();
   offer.sdp = tuneSdp(offer.sdp, q.mbps);
   await pc.setLocalDescription(offer);
-  send({ type: 'signal', data: { sdp: pc.localDescription.toJSON() } }, id);
+  send({ type: 'signal', data: { sdp: pc.localDescription.toJSON(), mbps: q.mbps } }, id);
 }
 
 async function applySenderParams(pc) {
@@ -279,7 +279,10 @@ async function applySenderParams(pc) {
   }
 }
 
-// Opus: stereo + high bitrate. Video: start fast and lift Chrome's screencast bitrate ceiling.
+// Opus: stereo + high bitrate. Video: lift Chrome's default bitrate ceiling.
+// Chrome reads these from the remote description, so the viewer's answer is what governs the sharer.
+// Start low and let Chrome probe upward: a high start floods long-distance links and the
+// bandwidth estimate collapses to its floor.
 function tuneSdp(sdp, mbps) {
   const kbps = mbps * 1000;
   const lines = sdp.split('\r\n');
@@ -288,7 +291,7 @@ function tuneSdp(sdp, mbps) {
     const m = l.match(/^a=rtpmap:(\d+) ([\w-]+)\//);
     if (m) rtpmap.set(m[1], m[2].toLowerCase());
   }
-  const videoExtra = `x-google-start-bitrate=${Math.round(kbps * 0.6)};x-google-max-bitrate=${kbps}`;
+  const videoExtra = `x-google-start-bitrate=1500;x-google-max-bitrate=${kbps}`;
   const audioExtra = 'stereo=1;sprop-stereo=1;maxaveragebitrate=510000;useinbandfec=1';
   const hasFmtp = new Set();
   const out = lines.map((l) => {
@@ -358,7 +361,7 @@ async function onSignal(from, data) {
     };
     await pc.setRemoteDescription(data.sdp);
     const answer = await pc.createAnswer();
-    answer.sdp = tuneSdp(answer.sdp, 80);
+    answer.sdp = tuneSdp(answer.sdp, Number(data.mbps) || 30);
     await pc.setLocalDescription(answer);
     send({ type: 'signal', data: { sdp: pc.localDescription.toJSON() } }, from);
   } else if (data.sdp?.type === 'answer') {
@@ -435,7 +438,7 @@ setInterval(async () => {
   if (!v) return (el.hidden = true);
   const codec = v.codecId && report.get(v.codecId)?.mimeType?.replace('video/', '');
   const mbps = bitrate('in', v);
-  const pair = [...report.values()].find((s) => s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded');
+  const pair = selectedPair(report);
   const relayed = pair && report.get(pair.localCandidateId)?.candidateType === 'relay';
   el.textContent = [
     `${v.frameWidth ?? '?'}×${v.frameHeight ?? '?'} @ ${Math.round(v.framesPerSecond ?? 0)} fps`,
@@ -456,9 +459,23 @@ async function renderSenderStats(el) {
       const limit = s.qualityLimitationReason && s.qualityLimitationReason !== 'none' ? ` · limited by ${s.qualityLimitationReason}` : '';
       lines.push(`→ ${nameOf(id)}: ${s.frameWidth ?? '?'}×${s.frameHeight ?? '?'} @ ${Math.round(s.framesPerSecond ?? 0)} · ${codec ?? ''} ${bitrate(id, s).toFixed(1)} Mbps${limit}`);
     });
+    const pair = selectedPair(report);
+    const remote = [...report.values()].find((s) => s.type === 'remote-inbound-rtp' && s.kind === 'video');
+    if (pair) {
+      const route = report.get(pair.localCandidateId)?.candidateType === 'relay' ? 'via TURN' : 'direct';
+      const avail = pair.availableOutgoingBitrate ? `${(pair.availableOutgoingBitrate / 1e6).toFixed(1)} Mbps` : '?';
+      const rtt = pair.currentRoundTripTime != null ? `${Math.round(pair.currentRoundTripTime * 1000)} ms` : '?';
+      const loss = remote?.fractionLost != null ? ` · loss ${(remote.fractionLost * 100).toFixed(1)}%` : '';
+      lines.push(`  network: est. ${avail} available · rtt ${rtt}${loss} · ${route}`);
+    }
   }
   el.textContent = lines.join('\n');
   el.hidden = false;
+}
+
+function selectedPair(report) {
+  const transport = [...report.values()].find((s) => s.type === 'transport' && s.selectedCandidatePairId);
+  return transport && report.get(transport.selectedCandidatePairId);
 }
 
 function bitrate(key, s) {
