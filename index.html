@@ -73,9 +73,22 @@
             <label>Max bitrate <span id="bitrateLabel"></span>
               <input id="bitrateInput" type="range" min="2" max="80" step="1" value="30">
             </label>
+            <label title="Forces Chrome to send at least this much, even when its estimate is lower. Set it below your measured speed.">Guaranteed bitrate
+              <select id="minSelect">
+                <option value="0" selected>Off (adaptive)</option>
+                <option value="2">2 Mbps</option>
+                <option value="4">4 Mbps</option>
+                <option value="6">6 Mbps</option>
+                <option value="10">10 Mbps</option>
+                <option value="15">15 Mbps</option>
+                <option value="20">20 Mbps</option>
+                <option value="30">30 Mbps</option>
+              </select>
+            </label>
           </div>
           <div class="row">
             <button id="shareBtn" class="primary">Start sharing</button>
+            <button id="speedBtn" hidden>Test connection speed</button>
             <span id="uploadHint" class="muted"></span>
           </div>
         </div>

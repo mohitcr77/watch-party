@@ -3,6 +3,7 @@ import { ICE_SERVERS } from './config.js';
 
 const $ = (id) => document.getElementById(id);
 const APP_ID = 'watch-party-mohitcr77-v1';
+window.__wp = () => state; // debugging hook for the console and e2e tests
 
 const state = {
   me: selfId,
@@ -13,6 +14,7 @@ const state = {
   peers: new Map(), // id -> { name, rtt }
   sharer: null,
   pcs: new Map(), // media connections, separate from Trystero's data connections
+  speed: new Map(), // id -> speed-test data channel on the media connection
   localStream: null,
   rev: 0, // logical clock: the newest file/playback change wins
   roomFile: null,
@@ -162,6 +164,7 @@ function quality() {
     codec: $('codecSelect').value,
     hint: $('hintSelect').value,
     mbps: Number($('bitrateInput').value),
+    minMbps: Number($('minSelect').value),
   };
 }
 
@@ -243,6 +246,7 @@ async function connectViewer(id) {
   closePc(id);
   const q = quality();
   const pc = createPc(id);
+  state.speed.set(id, speedChannel(pc, id));
 
   for (const track of state.localStream.getTracks()) {
     const tx = pc.addTransceiver(track, { direction: 'sendonly', streams: [state.localStream] });
@@ -252,9 +256,9 @@ async function connectViewer(id) {
   }
 
   const offer = await pc.createOffer();
-  offer.sdp = tuneSdp(offer.sdp, q.mbps);
+  offer.sdp = tuneSdp(offer.sdp, q.mbps, q.minMbps);
   await pc.setLocalDescription(offer);
-  send({ type: 'signal', data: { sdp: pc.localDescription.toJSON(), mbps: q.mbps } }, id);
+  send({ type: 'signal', data: { sdp: pc.localDescription.toJSON(), mbps: q.mbps, minMbps: q.minMbps } }, id);
 }
 
 async function applySenderParams(pc) {
@@ -283,15 +287,16 @@ async function applySenderParams(pc) {
 // Chrome reads these from the remote description, so the viewer's answer is what governs the sharer.
 // Start low and let Chrome probe upward: a high start floods long-distance links and the
 // bandwidth estimate collapses to its floor.
-function tuneSdp(sdp, mbps) {
+function tuneSdp(sdp, mbps, minMbps = 0) {
   const kbps = mbps * 1000;
+  const minKbps = Math.min(minMbps, mbps) * 1000;
   const lines = sdp.split('\r\n');
   const rtpmap = new Map();
   for (const l of lines) {
     const m = l.match(/^a=rtpmap:(\d+) ([\w-]+)\//);
     if (m) rtpmap.set(m[1], m[2].toLowerCase());
   }
-  const videoExtra = `x-google-start-bitrate=1500;x-google-max-bitrate=${kbps}`;
+  const videoExtra = `x-google-start-bitrate=${Math.max(1500, minKbps)};x-google-max-bitrate=${kbps}` + (minKbps ? `;x-google-min-bitrate=${minKbps}` : '');
   const audioExtra = 'stereo=1;sprop-stereo=1;maxaveragebitrate=510000;useinbandfec=1';
   const hasFmtp = new Set();
   const out = lines.map((l) => {
@@ -338,6 +343,7 @@ function createPc(id) {
 }
 
 function closePc(id) {
+  state.speed.delete(id);
   state.pcs.get(id)?.close();
   state.pcs.delete(id);
 }
@@ -346,6 +352,7 @@ async function onSignal(from, data) {
   if (data.sdp?.type === 'offer') {
     closePc(from);
     const pc = createPc(from);
+    speedChannel(pc, from);
     pc.ontrack = (e) => {
       const vid = $('shareVideo');
       if (vid.srcObject !== e.streams[0]) {
@@ -361,7 +368,7 @@ async function onSignal(from, data) {
     };
     await pc.setRemoteDescription(data.sdp);
     const answer = await pc.createAnswer();
-    answer.sdp = tuneSdp(answer.sdp, Number(data.mbps) || 30);
+    answer.sdp = tuneSdp(answer.sdp, Number(data.mbps) || 30, Number(data.minMbps) || 0);
     await pc.setLocalDescription(answer);
     send({ type: 'signal', data: { sdp: pc.localDescription.toJSON() } }, from);
   } else if (data.sdp?.type === 'answer') {
@@ -416,12 +423,78 @@ for (const id of ['bitrateInput', 'fpsSelect', 'hintSelect', 'resSelect']) {
   });
 }
 $('bitrateInput').addEventListener('input', renderUploadHint);
+// The minimum lives in the SDP, so changing it means reconnecting the video.
+$('minSelect').addEventListener('change', () => {
+  if (!state.localStream) return;
+  const q = quality();
+  sys(q.minMbps ? `Guaranteeing ${q.minMbps} Mbps. If video freezes or stutters, lower it.` : 'Guaranteed bitrate off. Chrome adapts on its own.');
+  for (const id of [...state.pcs.keys()]) connectViewer(id);
+});
+$('speedBtn').addEventListener('click', runSpeedTest);
 $('codecSelect').addEventListener('change', () => state.localStream && sys('Codec change applies the next time you start sharing.'));
 $('shareBtn').addEventListener('click', () => (state.localStream ? stopShare() : startShare()));
 $('unmuteBtn').addEventListener('click', () => {
   $('shareVideo').muted = false;
   $('unmuteBtn').hidden = true;
 });
+
+// ---------- speed test ----------
+// Floods a data channel on the same path as the video for a few seconds. It measures what the
+// link can carry, independent of Chrome's video bandwidth estimate.
+
+const SPEED_SECONDS = 6;
+
+function speedChannel(pc, id) {
+  const dc = pc.createDataChannel('speed', { negotiated: true, id: 0 });
+  dc.binaryType = 'arraybuffer';
+  let bytes = 0, first = 0, last = 0;
+  dc.onmessage = (e) => {
+    if (typeof e.data !== 'string') {
+      const now = performance.now();
+      if (!first) first = now;
+      last = now;
+      bytes += e.data.byteLength;
+      return;
+    }
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'start') { bytes = 0; first = 0; last = 0; }
+    if (msg.type === 'end') {
+      const mbps = last > first ? (bytes * 8) / ((last - first) / 1000) / 1e6 : 0;
+      dc.send(JSON.stringify({ type: 'result', mbps }));
+      sys(`Speed test: ${nameOf(id)} can send you about ${mbps.toFixed(1)} Mbps.`);
+    }
+    if (msg.type === 'result') reportSpeed(id, msg.mbps);
+  };
+  return dc;
+}
+
+async function runSpeedTest() {
+  const targets = [...state.speed].filter(([, dc]) => dc.readyState === 'open');
+  if (!targets.length) return sys('Start sharing first, then run the speed test.');
+  $('speedBtn').disabled = true;
+  $('speedBtn').textContent = 'Testing…';
+  sys(`Testing for ${SPEED_SECONDS} seconds. Video may stutter briefly.`);
+  const chunk = new Uint8Array(64 * 1024);
+  await Promise.all(targets.map(async ([, dc]) => {
+    dc.bufferedAmountLowThreshold = 1 << 20;
+    dc.send(JSON.stringify({ type: 'start' }));
+    const end = performance.now() + SPEED_SECONDS * 1000;
+    while (performance.now() < end && dc.readyState === 'open') {
+      while (dc.bufferedAmount < 8 << 20 && performance.now() < end) dc.send(chunk);
+      await new Promise((r) => { dc.onbufferedamountlow = r; setTimeout(r, 200); });
+    }
+    if (dc.readyState === 'open') dc.send(JSON.stringify({ type: 'end' }));
+  }));
+  $('speedBtn').disabled = false;
+  $('speedBtn').textContent = 'Test connection speed';
+}
+
+function reportSpeed(id, mbps) {
+  const safe = [30, 20, 15, 10, 6, 4, 2].find((m) => m <= mbps * 0.7) ?? 0;
+  sys(`Speed test: you can send ${nameOf(id)} about ${mbps.toFixed(1)} Mbps.` + (safe
+    ? ` Try "Guaranteed bitrate" at ${safe} Mbps and max bitrate around ${Math.min(80, Math.max(safe, Math.floor(mbps * 0.8)))} Mbps.`
+    : ' That is too slow for good screen share. Use 720p, or Synced file mode.'));
+}
 
 // ---------- stats overlay ----------
 
@@ -572,6 +645,7 @@ function renderShareUi() {
   const btn = $('shareBtn');
   btn.textContent = sharing ? 'Stop sharing' : state.sharer ? 'Take over sharing' : 'Start sharing';
   btn.className = sharing ? 'danger' : 'primary';
+  $('speedBtn').hidden = !sharing;
   $('codecSelect').disabled = sharing;
   const ph = $('placeholder');
   if (state.mode === 'file') {
